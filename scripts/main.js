@@ -9,7 +9,7 @@ const DIAMOND_ID = "minecraft:diamond";
 const AP_PER_DIAMOND = 100;          // 匯率：1 鑽石 -> 100 AP（單向）
 const MAX_TRANSFER = 1_000_000_000;  // 轉帳上限
 const START_BAL = 0;                 // 新玩家初始 AP
-const THEME = {                      // iPadOS 風味字元
+const THEME = {
   title: "iPadOS 控制中心",
   bank: "🏦 銀行",
   shop: "🛒 商店",
@@ -44,6 +44,7 @@ const SHOP = [
     ]
   }
 ];
+
 /* ==================== 工具與基礎 ==================== */
 function getObj() {
   let o = mc.world.scoreboard.getObjective(AP_OBJ);
@@ -77,39 +78,45 @@ function countItem(p, id) {
   return n;
 }
 function removeItems(p, id, amount) {
+  if (!Number.isFinite(amount) || amount <= 0) return 0; // 防 0
   const c = inv(p); if (!c) return 0;
-  let left = amount;
+  let left = Math.floor(amount);
   for (let i = 0; i < c.size && left > 0; i++) {
     const it = c.getItem(i);
     if (!it || it.typeId !== id) continue;
-    const take = Math.min(it.amount, left);
-    it.amount -= take;
-    left -= take;
-    if (it.amount <= 0) c.setItem(i); else c.setItem(i, it);
+    if (left >= it.amount) {
+      // 全數移除：直接清槽，不把 amount 改到 0
+      left -= it.amount;
+      c.setItem(i, undefined);
+    } else {
+      // 部分移除：把數量調整後寫回
+      const newAmount = it.amount - left;
+      left = 0;
+      it.amount = newAmount; // newAmount 保證 >=1
+      c.setItem(i, it);
+    }
   }
   return amount - left; // 實際移除數
 }
 function addItems(p, id, amount) {
-  // 以差分實測方式添加，直到加不進去
-  const before = countItem(p, id);
+  const c = inv(p); if (!c) return 0;
   const type = mc.ItemTypes.get(id);
   if (!type) return 0;
-  let remain = amount;
-  const c = inv(p); if (!c) return 0;
 
+  let remain = Math.floor(Math.max(0, amount));
+  const before = countItem(p, id);
   while (remain > 0) {
     const stackSize = Math.min(remain, type.maxStackSize ?? 64);
     const st = new mc.ItemStack(type, stackSize);
     try { c.addItem(st); } catch { break; }
     const after = countItem(p, id);
-    const added = after - (amount - remain + before);
-    if (added <= 0) break;
-    remain -= added;
+    const added = after - before;
+    remain = Math.max(0, amount - added);
+    if (added >= amount) break;
   }
   return amount - remain;
 }
 function maxAddable(p, id) {
-  // 粗估能放入的數量：既有同類剩餘空間 + 空槽*maxStack
   const c = inv(p); if (!c) return 0;
   const type = mc.ItemTypes.get(id);
   const maxStack = type?.maxStackSize ?? 64;
@@ -186,12 +193,13 @@ function exchangeDiamonds(p) {
   }
   const f = new ModalFormData()
     .title("鑽石兌換 AP")
-    .slider(`可兌換鑽石（最多 ${owned}）`, 1, owned, 1, Math.min(owned, 8));
+    // 重要：1.3.0 的 slider 只有 4 參數（label, min, max, value）
+    .slider(`可兌換鑽石（最多 ${owned}）`, 1, owned, Math.min(owned, 8));
   mc.system.run(() => {
     f.show(p).then(res => {
       if (res.canceled) return;
       const use = Math.floor(res.formValues[0] ?? 0);
-      if (use <= 0) return;
+      if (use <= 0) { p.sendMessage("§e未選擇兌換數量。"); return; }
       const removed = removeItems(p, DIAMOND_ID, use);
       if (removed <= 0) return p.sendMessage("§c兌換失敗：無法移除鑽石。");
       const ap = removed * AP_PER_DIAMOND;
@@ -220,9 +228,10 @@ function startTransferFlow(p) {
 function askTransferAmount(from, to) {
   const bal = getBal(from);
   if (bal <= 0) return from.sendMessage("§e你的餘額不足。");
+  const max = Math.min(bal, MAX_TRANSFER);
   const m = new ModalFormData()
     .title(`轉賬給 ${to.name}`)
-    .slider(`金額（上限 ${CURRENCY} ${nfmt(bal)}）`, 1, Math.min(bal, MAX_TRANSFER), 1, Math.min(bal, 100));
+    .slider(`金額（上限 ${CURRENCY} ${nfmt(max)}）`, 1, max, Math.min(max, 100));
   mc.system.run(() => {
     m.show(from).then(r => {
       if (r.canceled) return;
@@ -281,10 +290,11 @@ function buyFlow(p, item, onBack) {
   const max = Math.min(maxByMoney, maxBySpace, item.max ?? 64);
   if (max <= 0) { p.sendMessage("§e背包沒有足夠空間。"); return onBack?.(); }
 
-  const step = Math.min(item.max ?? 64, 16);
+  const init = Math.min(max, 16);
   const m = new ModalFormData()
     .title(`購買 ${item.name}`)
-    .slider(`數量（最多 ${nfmt(max)}）\n單價：${CURRENCY} ${nfmt(item.price)}\n總價=單價×數量`, 1, max, 1, Math.min(max, step));
+    // slider 僅 4 參數
+    .slider(`數量（最多 ${nfmt(max)}）\n單價：${CURRENCY} ${nfmt(item.price)}\n總價=單價×數量`, 1, max, init);
   mc.system.run(() => {
     m.show(p).then(r => {
       if (r.canceled) return;
@@ -321,7 +331,6 @@ function utilMenu(p) {
   });
 }
 function setHome(p) {
-  // 清除舊標籤
   for (const t of p.getTags()) if (t.startsWith(`${HOME_TAG}:`)) p.removeTag(t);
   const pos = p.location;
   const dim = p.dimension.id;
@@ -375,7 +384,9 @@ if (canRegCmd) {
         const p = origin?.sourceEntity; if (!p) return;
         mc.system.run(() => {
           const owned = countItem(p, DIAMOND_ID);
-          const use = Math.min(Math.max(1, Number(diamonds) || owned), owned);
+          if (owned <= 0) return p.sendMessage("§e你沒有鑽石可兌換。");
+          const req = Number.isFinite(Number(diamonds)) ? Math.max(1, Number(diamonds)) : owned;
+          const use = Math.min(req, owned);
           const removed = removeItems(p, DIAMOND_ID, use);
           if (removed <= 0) return p.sendMessage("§c沒有可兌換的鑽石。");
           const ap = removed * AP_PER_DIAMOND;
@@ -404,7 +415,7 @@ if (canRegCmd) {
   });
 }
 
-// 聊天備援：!ap（主菜單）  !bal  !deposit [數量]  !pay 名稱 金額
+// 聊天備援：!ap / !bal / !deposit [數量] / !pay 名稱 金額
 if (mc.world?.beforeEvents?.chatSend) {
   mc.world.beforeEvents.chatSend.subscribe(ev => {
     const msg = (ev.message || "").trim();
@@ -417,7 +428,9 @@ if (mc.world?.beforeEvents?.chatSend) {
     if (msg.startsWith("!deposit")) {
       const parts = msg.split(/\s+/);
       const owned = countItem(p, DIAMOND_ID);
-      const use = Math.min(Math.max(1, Number(parts[1]) || owned), owned);
+      if (owned <= 0) return p.sendMessage("§e你沒有鑽石可兌換。");
+      const req = Number.isFinite(Number(parts[1])) ? Math.max(1, Number(parts[1])) : owned;
+      const use = Math.min(req, owned);
       const removed = removeItems(p, DIAMOND_ID, use);
       if (removed <= 0) return p.sendMessage("§c沒有可兌換的鑽石。");
       const ap = removed * AP_PER_DIAMOND;
@@ -438,9 +451,8 @@ if (mc.world?.beforeEvents?.chatSend) {
 mc.world.afterEvents.playerSpawn.subscribe(ev => {
   if (!ev.initialSpawn) return;
   const p = ev.player;
-  // 初次給起始 AP（如有設定）
   const o = getObj();
-  const had = o.hasParticipant(p.scoreboardIdentity);
+  const had = o.hasParticipant ? o.hasParticipant(p.scoreboardIdentity) : false;
   if (!had && START_BAL > 0) o.setScore(p.scoreboardIdentity, START_BAL);
 });
 mc.system.runTimeout(() => {
