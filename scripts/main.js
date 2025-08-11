@@ -2,243 +2,218 @@
 import * as mc from "@minecraft/server";
 import { ActionFormData, ModalFormData, MessageFormData } from "@minecraft/server-ui";
 
-const DB_KEY = "eco:balances"; // 世界層級動態屬性，存放 { [playerId]: number }
-const CURRENCY = "⛁";          // 金幣符號
-const START_BAL = 0;           // 新玩家起始金額
-const MAX_TRANSFER = 1_000_000_000; // 轉帳上限（防呆）
+const OBJ = "eco";         // 計分板目標名
+const CUR = "⛁";          // 貨幣符號
+const START_BAL = 0;       // 新玩家起始金額
+const MAX_TRANSFER = 1_000_000_000;
 
-// ——— 安全 JSON 讀寫 ———
-function readDB() {
+// ——— 工具：確保計分板存在 ———
+function getObj() {
+  let o = mc.world.scoreboard.getObjective(OBJ);
+  if (!o) o = mc.world.scoreboard.addObjective(OBJ, "Economy");
+  return o;
+}
+function getBal(p) {
+  const o = getObj();
   try {
-    const raw = mc.world.getDynamicProperty(DB_KEY);
-    if (typeof raw === "string" && raw.length) return JSON.parse(raw);
+    const s = o.getScore(p.scoreboardIdentity);
+    return Number.isFinite(s) ? Math.max(0, s) : 0;
+  } catch { return 0; }
+}
+function setBal(p, val) {
+  const o = getObj();
+  o.setScore(p.scoreboardIdentity, Math.max(0, Math.floor(val)));
+}
+function addBal(p, delta) { setBal(p, getBal(p) + Math.floor(delta)); }
+
+// ——— 首登初始化 ———
+mc.world.afterEvents.playerSpawn.subscribe(ev => {
+  if (!ev.initialSpawn) return;
+  const p = ev.player;
+  const o = getObj();
+  try {
+    // 若未有分數，給起始金額
+    const had = o.hasParticipant(p.scoreboardIdentity);
+    if (!had && START_BAL > 0) o.setScore(p.scoreboardIdentity, START_BAL);
   } catch {}
-  return {};
-}
-function writeDB(obj) {
-  try { mc.world.setDynamicProperty(DB_KEY, JSON.stringify(obj)); }
-  catch (e) { console.warn("[Eco] writeDB failed:", e); }
-}
+});
 
-function getBal(playerId) {
-  const db = readDB();
-  return Math.max(0, db[playerId] ?? 0);
-}
-function setBal(playerId, amount) {
-  const db = readDB();
-  db[playerId] = Math.max(0, Math.floor(amount));
-  writeDB(db);
-}
-function addBal(playerId, delta) {
-  setBal(playerId, getBal(playerId) + Math.floor(delta));
-}
-
-function ensurePlayerInit(p) {
-  const db = readDB();
-  if (!(p.id in db)) {
-    db[p.id] = START_BAL;
-    writeDB(db);
-  }
-}
-
-// ——— 權限列舉相容處理 ———
-const hasPermEnum = mc.CommandPermissionLevel && typeof mc.CommandPermissionLevel.Any === "number";
-function cmdOpts(name, description, perm = "Any") {
-  if (hasPermEnum) {
-    const level = mc.CommandPermissionLevel[perm] ?? mc.CommandPermissionLevel.Any;
-    return { name, description, permissionLevel: level };
-  }
-  return { name, description }; // 兼容：不填就不會丟 undefined
-}
-
-// ——— UI：主選單 ———
+// ——— UI ———
 function openMainMenu(p) {
-  ensurePlayerInit(p);
-  const bal = getBal(p.id);
-
+  const bal = getBal(p);
   const form = new ActionFormData()
-    .title("經濟系統 Eco")
-    .body(`玩家：${p.name}\n餘額：${CURRENCY} ${bal.toLocaleString()}`)
+    .title("經濟系統 AP10")
+    .body(`玩家：${p.name}\n餘額：${CUR} ${bal.toLocaleString()}`)
     .button("查看餘額")
     .button("轉帳給玩家")
     .button("排行榜 TOP 15");
 
   mc.system.run(() => {
-    form.show(p).then((res) => {
+    form.show(p).then(res => {
       if (res.canceled) return;
-      switch (res.selection) {
-        case 0: showBalance(p); break;
-        case 1: startTransferFlow(p); break;
-        case 2: showTop(p); break;
-      }
-    }).catch((e) => console.warn(e));
+      if (res.selection === 0) showBalance(p);
+      if (res.selection === 1) startTransferFlow(p);
+      if (res.selection === 2) showTop(p);
+    }).catch(console.warn);
   });
 }
 
 function showBalance(p) {
-  const bal = getBal(p.id);
+  const bal = getBal(p);
   const msg = new MessageFormData()
     .title("我的餘額")
-    .body(`你目前的餘額是：\n${CURRENCY} ${bal.toLocaleString()}`)
+    .body(`你目前的餘額：\n${CUR} ${bal.toLocaleString()}`)
     .button1("關閉").button2("返回主選單");
-  mc.system.run(() => {
-    msg.show(p).then((r) => { if (r.selection === 1) openMainMenu(p); });
-  });
+  mc.system.run(() => msg.show(p).then(r => { if (r.selection === 1) openMainMenu(p); }));
 }
 
-// ——— UI：轉帳流程（選人 → 選金額）———
 function startTransferFlow(p) {
   const others = mc.world.getPlayers({ excludeNames: [p.name] });
   if (others.length === 0) {
-    p.sendMessage("§e目前沒有其他線上玩家可轉帳。");
-    return openMainMenu(p);
+    p.sendMessage("§e目前沒有其他在線玩家可轉帳。");
+    return;
   }
-  const list = others.map(pl => pl.name);
-  const choose = new ModalFormData()
+  const names = others.map(x => x.name);
+  const chooser = new ModalFormData()
     .title("選擇收款玩家")
-    .dropdown("收款人", list, 0);
+    .dropdown("收款人", names, 0);
   mc.system.run(() => {
-    choose.show(p).then((res) => {
+    chooser.show(p).then(res => {
       if (res.canceled) return;
       const idx = res.formValues[0];
-      const targetName = list[idx];
-      const target = mc.world.getPlayers({ name: targetName })[0];
-      if (!target) { p.sendMessage("§c對方已離線。"); return; }
+      const target = mc.world.getPlayers({ name: names[idx] })[0];
+      if (!target) return p.sendMessage("§c對方已離線。");
       askAmountAndTransfer(p, target);
     }).catch(console.warn);
   });
 }
 
 function askAmountAndTransfer(from, to) {
-  ensurePlayerInit(from);
-  ensurePlayerInit(to);
-  const bal = getBal(from.id);
-  if (bal <= 0) {
-    from.sendMessage("§e你沒有可轉帳的金額。");
-    return openMainMenu(from);
-  }
+  const bal = getBal(from);
+  if (bal <= 0) { from.sendMessage("§e你沒有可轉帳的金額。"); return; }
   const max = Math.min(bal, MAX_TRANSFER);
   const modal = new ModalFormData()
     .title(`轉帳給 ${to.name}`)
-    .slider(`選擇金額（可轉上限：${CURRENCY} ${max.toLocaleString()}）`, 1, max, 1, Math.min(100, max));
+    .slider(`選擇金額（可轉上限：${CUR} ${max.toLocaleString()}）`, 1, max, 1, Math.min(100, max));
   mc.system.run(() => {
-    modal.show(from).then((res) => {
+    modal.show(from).then(res => {
       if (res.canceled) return;
-      const amount = Math.floor(res.formValues[0] ?? 0);
-      doTransfer(from, to, amount);
+      const amt = Math.floor(res.formValues[0] ?? 0);
+      doTransfer(from, to, amt);
     }).catch(console.warn);
   });
 }
 
 function doTransfer(from, to, amount) {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    from.sendMessage("§c金額必須是正整數。");
-    return;
-  }
-  if (from.id === to.id) {
-    from.sendMessage("§c不能轉給自己。");
-    return;
-  }
-  const fromBal = getBal(from.id);
-  if (amount > fromBal) {
-    from.sendMessage(`§c餘額不足（目前 ${CURRENCY} ${fromBal.toLocaleString()}）。`);
-    return;
-  }
-  addBal(from.id, -amount);
-  addBal(to.id, amount);
-  from.sendMessage(`§a已轉帳 ${CURRENCY} ${amount.toLocaleString()} 給 ${to.name}。`);
-  to.sendMessage(`§a收到 ${from.name} 轉帳 ${CURRENCY} ${amount.toLocaleString()}。`);
+  if (!Number.isFinite(amount) || amount <= 0) return from.sendMessage("§c金額必須是正整數。");
+  if (from.id === to.id) return from.sendMessage("§c不能轉給自己。");
+  const bal = getBal(from);
+  if (amount > bal) return from.sendMessage(`§c餘額不足（目前 ${CUR} ${bal.toLocaleString()}）。`);
+  addBal(from, -amount);
+  addBal(to, amount);
+  from.sendMessage(`§a已轉帳 ${CUR} ${amount.toLocaleString()} 給 ${to.name}。`);
+  to.sendMessage(`§a收到 ${from.name} 轉帳 ${CUR} ${amount.toLocaleString()}。`);
 }
 
-// ——— UI：排行榜 ———
 function showTop(p) {
-  const db = readDB();
-  const entries = Object.entries(db);
-  // 將 playerId 映射成目前的玩家名稱（離線者以 id 末 6 碼代稱）
-  const online = new Map(mc.world.getPlayers().map(pl => [pl.id, pl.name]));
-  entries.sort((a, b) => b[1] - a[1]);
-  const top = entries.slice(0, 15)
-    .map(([id, val], i) => `${i + 1}. ${(online.get(id) ?? `#${id.slice(-6)}`)} — ${CURRENCY} ${val.toLocaleString()}`)
-    .join("\n");
-  const msg = new MessageFormData().title("金幣排行榜").body(top || "目前沒有資料").button1("關閉").button2("返回主選單");
-  mc.system.run(() => { msg.show(p).then(r => { if (r.selection === 1) openMainMenu(p); }); });
+  const o = getObj();
+  const parts = o.getParticipants();
+  const rows = [];
+  for (const part of parts) {
+    const score = o.getScore(part);
+    if (!Number.isFinite(score)) continue;
+    rows.push({ name: part.displayName ?? "#unknown", score });
+  }
+  rows.sort((a, b) => b.score - a.score);
+  const text = rows.slice(0, 15).map((r, i) =>
+    `${i + 1}. ${r.name} — ${CUR} ${r.score.toLocaleString()}`
+  ).join("\n") || "目前沒有資料";
+  const msg = new MessageFormData().title("金幣排行榜").body(text).button1("關閉").button2("返回主選單");
+  mc.system.run(() => msg.show(p).then(r => { if (r.selection === 1) openMainMenu(p); }));
 }
 
-// ——— 指令註冊 ———
-mc.system.beforeEvents.startup.subscribe(({ customCommandRegistry: reg }) => {
-  if (!reg) {
-    mc.world.sendMessage("§c[Eco] 自訂指令無法使用（可能是 API 版本不符）。");
-    return;
-  }
+// ——— 指令註冊（若可用），並提供聊天/ScriptEvent 備援 ———
+const hasPermEnum = mc.CommandPermissionLevel && typeof mc.CommandPermissionLevel.Any === "number";
+const canRegCmd = !!(mc.system?.beforeEvents && "startup" in mc.system.beforeEvents);
 
-  // /eco:menu
-  reg.registerCommand(
-    cmdOpts("eco:menu", "打開經濟系統菜單", "Any"),
-    (origin) => {
-      const p = origin?.sourceEntity;
-      if (!p) return;
+if (canRegCmd) {
+  mc.system.beforeEvents.startup.subscribe(({ customCommandRegistry: reg }) => {
+    if (!reg) return; // 某些版本沒有指令註冊器
+    const base = (name, description) =>
+      hasPermEnum ? { name, description, permissionLevel: mc.CommandPermissionLevel.Any }
+                  : { name, description };
+
+    // /eco:menu
+    reg.registerCommand(base("eco:menu", "打開經濟系統菜單"), (origin) => {
+      const p = origin?.sourceEntity; if (!p) return;
       mc.system.run(() => openMainMenu(p));
-    }
-  );
+    });
 
-  // /eco:bal
-  reg.registerCommand(
-    cmdOpts("eco:bal", "查看餘額", "Any"),
-    (origin) => {
-      const p = origin?.sourceEntity;
-      if (!p) return;
+    // /eco:bal
+    reg.registerCommand(base("eco:bal", "查看餘額"), (origin) => {
+      const p = origin?.sourceEntity; if (!p) return;
       mc.system.run(() => showBalance(p));
+    });
+
+    // /eco:pay <玩家名> <金額>
+    reg.registerCommand(
+      {
+        ...base("eco:pay", "轉帳給指定玩家"),
+        mandatoryParameters: [
+          { name: "toName", type: mc.CustomCommandParamType.String },
+          { name: "amount", type: mc.CustomCommandParamType.Integer }
+        ],
+      },
+      (origin, toName, amount) => {
+        const from = origin?.sourceEntity; if (!from) return;
+        const to = mc.world.getPlayers({ name: String(toName) })[0];
+        if (!to) return mc.system.run(() => from.sendMessage("§c找不到該玩家（需在線且名稱精確）。"));
+        mc.system.run(() => doTransfer(from, to, Number(amount)));
+      }
+    );
+  });
+}
+
+// 聊天前綴（兼容沒有自訂指令的版本）：!eco / !bal / !pay 名稱 金額
+if (mc.world?.beforeEvents && mc.world.beforeEvents.chatSend) {
+  mc.world.beforeEvents.chatSend.subscribe(ev => {
+    const msg = (ev.message || "").trim();
+    if (!msg.startsWith("!eco") && !msg.startsWith("!bal") && !msg.startsWith("!pay")) return;
+    ev.cancel = true;
+    const p = ev.sender;
+    if (msg === "!eco") return openMainMenu(p);
+    if (msg === "!bal") return showBalance(p);
+    if (msg.startsWith("!pay")) {
+      const parts = msg.split(/\s+/);
+      if (parts.length < 3) return p.sendMessage("§e用法：!pay 玩家名 金額");
+      const name = parts[1];
+      const amt = Number(parts[2]);
+      const to = mc.world.getPlayers({ name })[0];
+      if (!to) return p.sendMessage("§c找不到該玩家（需在線且名稱精確）。");
+      return doTransfer(p, to, amt);
     }
-  );
+  });
+}
 
-  // /eco:pay <playerName:String> <amount:Int>
-  reg.registerCommand(
-    {
-      ...cmdOpts("eco:pay", "轉帳給指定玩家", "Any"),
-      mandatoryParameters: [
-        { name: "toName", type: mc.CustomCommandParamType.String },
-        { name: "amount", type: mc.CustomCommandParamType.Integer },
-      ],
-    },
-    (origin, toName, amount) => {
-      const from = origin?.sourceEntity;
-      if (!from) return;
-      const to = mc.world.getPlayers({ name: String(toName) })[0];
-      if (!to) return mc.system.run(() => from.sendMessage("§c找不到該玩家（需要精確名稱且在線）。"));
-      mc.system.run(() => doTransfer(from, to, Number(amount)));
+// ScriptEvent 備援：/scriptevent ap10:menu ；/scriptevent ap10:pay|名字|金額
+if (mc.system?.afterEvents && mc.system.afterEvents.scriptEventReceive) {
+  mc.system.afterEvents.scriptEventReceive.subscribe(ev => {
+    if (!ev.id) return;
+    const p = ev.sourceEntity;
+    if (!p || p.typeId !== "minecraft:player") return;
+    if (ev.id === "ap10:menu") return openMainMenu(p);
+    if (ev.id.startsWith("ap10:pay")) {
+      const payload = String(ev.message || "");
+      const [name, amtStr] = payload.split("|");
+      const to = mc.world.getPlayers({ name })[0];
+      if (!to) return p.sendMessage("§c找不到該玩家。");
+      return doTransfer(p, to, Number(amtStr));
     }
-  );
+  });
+}
 
-  // 範例管理員指令：/eco:give <playerName> <amount>（可改成 Host/Admin）
-  reg.registerCommand(
-    {
-      ...cmdOpts("eco:give", "管理員加錢", hasPermEnum ? "Admin" : "Any"),
-      mandatoryParameters: [
-        { name: "toName", type: mc.CustomCommandParamType.String },
-        { name: "amount", type: mc.CustomCommandParamType.Integer },
-      ],
-    },
-    (origin, toName, amount) => {
-      const src = origin?.sourceEntity;
-      const to = mc.world.getPlayers({ name: String(toName) })[0];
-      if (!to) return src && mc.system.run(() => src.sendMessage("§c找不到該玩家（需在線）。"));
-      mc.system.run(() => {
-        ensurePlayerInit(to);
-        addBal(to.id, Math.max(0, Number(amount)));
-        src?.sendMessage(`§a已為 ${to.name} 增加 ${CURRENCY} ${Number(amount).toLocaleString()}`);
-        to.sendMessage(`§a管理員發給你 ${CURRENCY} ${Number(amount).toLocaleString()}`);
-      });
-    }
-  );
-});
-
-// 世界載入提示
-mc.world.afterEvents.worldLoad.subscribe(() => {
-  const hint = hasPermEnum ? "" : "（檢測不到 CommandPermissionLevel，已啟用相容模式）";
-  mc.world.sendMessage(`§a[Eco] 已載入：/eco:menu、/eco:bal、/eco:pay ${hint}`);
-});
-
-// 新玩家初始化
-mc.world.afterEvents.playerSpawn.subscribe((ev) => {
-  if (ev.initialSpawn) ensurePlayerInit(ev.player);
-});
+// 啟動提示
+mc.system.runTimeout(() => {
+  getObj(); // 確保目標已建立
+  mc.world.sendMessage("§a[AP10] 經濟系統已載入：/eco:menu 或 !eco（若 / 無效）。");
+}, 5);
