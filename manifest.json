@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "header": {
-    "name": "AP10 v0.0.5",
+    "name": "AP10 v0.0.6",
     "description": "Coins with menu UI & transfer (scoreboard-based)",
     "uuid": "ca61c6ad-da5e-4b39-a099-aa0b9fd946a4",
     "version": [1, 0, 2],
