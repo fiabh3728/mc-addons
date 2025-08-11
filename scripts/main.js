@@ -226,11 +226,14 @@ function exchangeDiamonds(p) {
 }
 function startTransferFlow(p) {
   const others = mc.world.getPlayers({ excludeNames: [p.name] });
-  if (others.length === 0) { p.sendMessage("§e沒有其他在線玩家可轉賬。"); return; }
+  if (others.length === 0) { 
+    p.sendMessage("§e沒有其他在線玩家可轉賬。"); 
+    return; 
+  }
   const names = others.map(pl => pl.name);
   const pick = new ModalFormData()
     .title("選擇收款玩家")
-    .dropdown("收款人", names, 0);
+    .dropdown("收款人", { options: names, default: 0 });
   mc.system.run(() => {
     pick.show(p).then(r => {
       if (r.canceled) return;
