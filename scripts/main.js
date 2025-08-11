@@ -2,7 +2,7 @@
 import * as mc from "@minecraft/server";
 import { ActionFormData, ModalFormData, MessageFormData } from "@minecraft/server-ui";
 
-/* ==================== 配置區（可改） ==================== */
+/* ==================== 配置區 ==================== */
 const AP_OBJ = "ap";                 // scoreboard 目標：AP 金幣
 const CURRENCY = "AP";               // 幣別顯示
 const DIAMOND_ID = "minecraft:diamond";
@@ -18,7 +18,7 @@ const THEME = {
   sep: "————————————"
 };
 
-// 商店清單（可自行添加/調整價格）
+// 商店清單
 const SHOP = [
   {
     name: "🧰 工具 Tools",
@@ -78,41 +78,36 @@ function countItem(p, id) {
   return n;
 }
 function removeItems(p, id, amount) {
-  if (!Number.isFinite(amount) || amount <= 0) return 0; // 防 0
   const c = inv(p); if (!c) return 0;
-  let left = Math.floor(amount);
+  amount = Math.max(1, Math.min(Math.floor(amount || 0), 255)); // 保證在 1..255
+  let left = amount;
   for (let i = 0; i < c.size && left > 0; i++) {
     const it = c.getItem(i);
     if (!it || it.typeId !== id) continue;
-    if (left >= it.amount) {
-      // 全數移除：直接清槽，不把 amount 改到 0
-      left -= it.amount;
-      c.setItem(i, undefined);
-    } else {
-      // 部分移除：把數量調整後寫回
-      const newAmount = it.amount - left;
-      left = 0;
-      it.amount = newAmount; // newAmount 保證 >=1
-      c.setItem(i, it);
-    }
+    const take = Math.min(it.amount, left);
+    const newAmt = it.amount - take;
+    left -= take;
+    if (newAmt <= 0) c.setItem(i, undefined);
+    else { it.amount = newAmt; c.setItem(i, it); }
   }
-  return amount - left; // 實際移除數
+  return amount - left; // 實際移除
 }
 function addItems(p, id, amount) {
-  const c = inv(p); if (!c) return 0;
+  const before = countItem(p, id);
   const type = mc.ItemTypes.get(id);
   if (!type) return 0;
+  let remain = Math.max(1, Math.floor(amount || 0));
+  const c = inv(p); if (!c) return 0;
 
-  let remain = Math.floor(Math.max(0, amount));
-  const before = countItem(p, id);
+  // 逐批嘗試加入，直到加不進去
   while (remain > 0) {
-    const stackSize = Math.min(remain, type.maxStackSize ?? 64);
-    const st = new mc.ItemStack(type, stackSize);
+    const batch = Math.min(remain, type.maxStackSize ?? 64);
+    const st = new mc.ItemStack(type, batch);
     try { c.addItem(st); } catch { break; }
     const after = countItem(p, id);
-    const added = after - before;
-    remain = Math.max(0, amount - added);
-    if (added >= amount) break;
+    const added = after - (amount - remain + before);
+    if (added <= 0) break;
+    remain -= added;
   }
   return amount - remain;
 }
@@ -191,22 +186,25 @@ function exchangeDiamonds(p) {
     p.sendMessage("§e你沒有鑽石可兌換。");
     return bankMenu(p);
   }
+  const maxExchange = Math.min(owned, 64); // UI 上限保守值
   const f = new ModalFormData()
     .title("鑽石兌換 AP")
-    // 重要：1.3.0 的 slider 只有 4 參數（label, min, max, value）
-    .slider(`可兌換鑽石（最多 ${owned}）`, 1, owned, Math.min(owned, 8));
+    // 注意：1.3.0 版 slider 只有 4 個參數 (label, min, max, value)
+    .slider(`可兌換鑽石（最多 ${maxExchange}）`, 1, maxExchange, Math.min(maxExchange, 8));
   mc.system.run(() => {
     f.show(p).then(res => {
       if (res.canceled) return;
-      const use = Math.floor(res.formValues[0] ?? 0);
-      if (use <= 0) { p.sendMessage("§e未選擇兌換數量。"); return; }
+      const use = Math.max(1, Math.min(Math.floor(res.formValues[0] || 1), maxExchange));
       const removed = removeItems(p, DIAMOND_ID, use);
       if (removed <= 0) return p.sendMessage("§c兌換失敗：無法移除鑽石。");
       const ap = removed * AP_PER_DIAMOND;
       addBal(p, ap);
       p.sendMessage(`§a已將 ${removed} 鑽石兌換為 ${CURRENCY} ${nfmt(ap)}。`);
       bankMenu(p);
-    }).catch(console.warn);
+    }).catch(e => {
+      console.warn("兌換過程出錯：", e);
+      p.sendMessage("§c兌換發生未知錯誤。");
+    });
   });
 }
 function startTransferFlow(p) {
@@ -231,11 +229,12 @@ function askTransferAmount(from, to) {
   const max = Math.min(bal, MAX_TRANSFER);
   const m = new ModalFormData()
     .title(`轉賬給 ${to.name}`)
+    // 1.3.0 slider 四參數
     .slider(`金額（上限 ${CURRENCY} ${nfmt(max)}）`, 1, max, Math.min(max, 100));
   mc.system.run(() => {
     m.show(from).then(r => {
       if (r.canceled) return;
-      doTransfer(from, to, Math.floor(r.formValues[0] ?? 0));
+      doTransfer(from, to, Math.max(1, Math.floor(r.formValues[0] || 1)));
     });
   });
 }
@@ -290,16 +289,14 @@ function buyFlow(p, item, onBack) {
   const max = Math.min(maxByMoney, maxBySpace, item.max ?? 64);
   if (max <= 0) { p.sendMessage("§e背包沒有足夠空間。"); return onBack?.(); }
 
-  const init = Math.min(max, 16);
-  const m = new ModalFormData()
+  const f = new ModalFormData()
     .title(`購買 ${item.name}`)
-    // slider 僅 4 參數
-    .slider(`數量（最多 ${nfmt(max)}）\n單價：${CURRENCY} ${nfmt(item.price)}\n總價=單價×數量`, 1, max, init);
+    // 1.3.0 slider 四參數
+    .slider(`數量（最多 ${nfmt(max)}）\n單價：${CURRENCY} ${nfmt(item.price)}\n總價=單價×數量`, 1, max, Math.min(max, 16));
   mc.system.run(() => {
-    m.show(p).then(r => {
+    f.show(p).then(r => {
       if (r.canceled) return;
-      const qty = Math.floor(r.formValues[0] ?? 0);
-      if (qty <= 0) return;
+      const qty = Math.max(1, Math.floor(r.formValues[0] || 1));
       const cost = qty * item.price;
       if (getBal(p) < cost) return p.sendMessage("§c餘額變動，購買失敗。");
       const added = addItems(p, item.id, qty);
@@ -312,7 +309,7 @@ function buyFlow(p, item, onBack) {
 }
 
 /* ==================== 功能系統（家點） ==================== */
-const HOME_TAG = "ap10:home"; // 內容格式：ap10:home:x,y,z,dimId
+const HOME_TAG = "ap10:home"; // 內容：ap10:home:x,y,z,dimId
 function utilMenu(p) {
   const hasHome = p.getTags().some(t => t.startsWith(`${HOME_TAG}:`));
   const f = new ActionFormData()
@@ -351,6 +348,54 @@ function goHome(p) {
   } catch { p.sendMessage("§c傳送失敗：家點維度不存在。"); }
 }
 
+/* ==================== 排行榜（修復型別差異） ==================== */
+function showTop(p) {
+  const o = getObj();
+  const rows = [];
+
+  // 首選：嘗試用 getParticipants（相容 ScoreboardIdentity 與 ScoreboardParticipant）
+  let usedParticipants = false;
+  try {
+    const parts = o.getParticipants();
+    for (const part of parts) {
+      // 可能是 ScoreboardIdentity（直接用）
+      // 也可能是 ScoreboardParticipant（用 .scoreboardIdentity）
+      const id = part?.scoreboardIdentity ?? part;
+      let score;
+      try { score = o.getScore(id); } catch { continue; }
+      if (!Number.isFinite(score)) continue;
+
+      // 名稱：ScoreboardIdentity 有 displayName；Participant 常也有 displayName
+      const name = part?.displayName ?? id?.displayName ?? "#unknown";
+      rows.push({ name, score });
+    }
+    if (rows.length) usedParticipants = true;
+  } catch {
+    // 某些版本沒有 getParticipants
+  }
+
+  // 備援：僅統計在線玩家
+  if (!usedParticipants) {
+    for (const pl of mc.world.getPlayers()) {
+      try {
+        const s = o.getScore(pl.scoreboardIdentity);
+        if (Number.isFinite(s)) rows.push({ name: pl.name, score: s });
+      } catch {}
+    }
+  }
+
+  rows.sort((a, b) => b.score - a.score);
+  const text = rows.slice(0, 15)
+    .map((r, i) => `${i + 1}. ${r.name} — ${CURRENCY} ${nfmt(r.score)}`)
+    .join("\n") || "目前沒有資料";
+
+  const msg = new MessageFormData()
+    .title("金幣排行榜")
+    .body(text)
+    .button1("關閉").button2("返回主選單");
+  mc.system.run(() => msg.show(p).then(r => { if (r.selection === 1) openMain(p); }));
+}
+
 /* ==================== 指令與備援 ==================== */
 const hasPermEnum = mc.CommandPermissionLevel && typeof mc.CommandPermissionLevel.Any === "number";
 const canRegCmd = !!(mc.system?.beforeEvents && "startup" in mc.system.beforeEvents);
@@ -374,7 +419,7 @@ if (canRegCmd) {
       mc.system.run(() => showBalance(p, () => openMain(p)));
     });
 
-    // /ap:deposit <diamonds:Int>
+    // /ap:deposit <diamonds:Int?>
     reg.registerCommand(
       {
         ...base("ap:deposit", "用鑽石兌換 AP（單向）"),
@@ -384,9 +429,7 @@ if (canRegCmd) {
         const p = origin?.sourceEntity; if (!p) return;
         mc.system.run(() => {
           const owned = countItem(p, DIAMOND_ID);
-          if (owned <= 0) return p.sendMessage("§e你沒有鑽石可兌換。");
-          const req = Number.isFinite(Number(diamonds)) ? Math.max(1, Number(diamonds)) : owned;
-          const use = Math.min(req, owned);
+          const use = Math.max(1, Math.min(Math.floor(Number.isFinite(diamonds) ? Number(diamonds) : owned), owned));
           const removed = removeItems(p, DIAMOND_ID, use);
           if (removed <= 0) return p.sendMessage("§c沒有可兌換的鑽石。");
           const ap = removed * AP_PER_DIAMOND;
@@ -396,7 +439,7 @@ if (canRegCmd) {
       }
     );
 
-    // /ap:pay <player:String> <amount:Int>
+    // /ap:pay <玩家名> <金額>
     reg.registerCommand(
       {
         ...base("ap:pay", "轉賬給玩家"),
@@ -409,13 +452,13 @@ if (canRegCmd) {
         const from = origin?.sourceEntity; if (!from) return;
         const to = mc.world.getPlayers({ name: String(targetName) })[0];
         if (!to) return mc.system.run(() => from.sendMessage("§c找不到該玩家（需在線且名稱精確）。"));
-        mc.system.run(() => doTransfer(from, to, Number(amount)));
+        mc.system.run(() => doTransfer(from, to, Math.max(1, Math.floor(Number(amount) || 0))));
       }
     );
   });
 }
 
-// 聊天備援：!ap / !bal / !deposit [數量] / !pay 名稱 金額
+// 聊天備援：!ap  !bal  !deposit [數量]  !pay 名稱 金額
 if (mc.world?.beforeEvents?.chatSend) {
   mc.world.beforeEvents.chatSend.subscribe(ev => {
     const msg = (ev.message || "").trim();
@@ -428,9 +471,7 @@ if (mc.world?.beforeEvents?.chatSend) {
     if (msg.startsWith("!deposit")) {
       const parts = msg.split(/\s+/);
       const owned = countItem(p, DIAMOND_ID);
-      if (owned <= 0) return p.sendMessage("§e你沒有鑽石可兌換。");
-      const req = Number.isFinite(Number(parts[1])) ? Math.max(1, Number(parts[1])) : owned;
-      const use = Math.min(req, owned);
+      const use = Math.max(1, Math.min(Math.floor(Number(parts[1]) || owned), owned));
       const removed = removeItems(p, DIAMOND_ID, use);
       if (removed <= 0) return p.sendMessage("§c沒有可兌換的鑽石。");
       const ap = removed * AP_PER_DIAMOND;
@@ -442,7 +483,7 @@ if (mc.world?.beforeEvents?.chatSend) {
       if (parts.length < 3) return p.sendMessage("§e用法：!pay 玩家名 金額");
       const to = mc.world.getPlayers({ name: parts[1] })[0];
       if (!to) return p.sendMessage("§c找不到該玩家（需在線且名稱精確）。");
-      return doTransfer(p, to, Number(parts[2]));
+      return doTransfer(p, to, Math.max(1, Math.floor(Number(parts[2]) || 0)));
     }
   });
 }
@@ -452,7 +493,8 @@ mc.world.afterEvents.playerSpawn.subscribe(ev => {
   if (!ev.initialSpawn) return;
   const p = ev.player;
   const o = getObj();
-  const had = o.hasParticipant ? o.hasParticipant(p.scoreboardIdentity) : false;
+  let had = false;
+  try { had = o.hasParticipant ? o.hasParticipant(p.scoreboardIdentity) : false; } catch {}
   if (!had && START_BAL > 0) o.setScore(p.scoreboardIdentity, START_BAL);
 });
 mc.system.runTimeout(() => {
