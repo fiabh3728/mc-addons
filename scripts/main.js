@@ -13,7 +13,6 @@ const THEME = {
   title: "iPadOS 控制中心",
   bank: "🏦 銀行",
   shop: "🛒 商店",
-  util: "🧰 功能",
   back: "‹ 返回",
   sep: "————————————"
 };
@@ -156,14 +155,12 @@ function openMain(p) {
     .title(` ${THEME.title}`)
     .body(`${THEME.sep}\n玩家：${p.name}\n餘額：${CURRENCY} ${nfmt(bal)}\n${THEME.sep}`)
     .button(`${THEME.bank}\n管理餘額、兌換、轉賬`)
-    .button(`${THEME.shop}\n購買道具與方塊`)
-    .button(`${THEME.util}\n家點、實用工具`);
+    .button(`${THEME.shop}\n購買道具與方塊`);
   mc.system.run(() => {
     f.show(p).then(res => {
       if (res.canceled) return;
       if (res.selection === 0) bankMenu(p);
       if (res.selection === 1) shopMenu(p);
-      if (res.selection === 2) utilMenu(p);
     }).catch(console.warn);
   });
 }
@@ -326,86 +323,6 @@ function buyFlow(p, item, onBack) {
       onBack?.();
     }).catch(console.warn);
   });
-}
-
-/* ==================== 功能系統（家點） ==================== */
-const HOME_TAG = "ap10:home"; // 內容：ap10:home:x,y,z,dimId
-function utilMenu(p) {
-  const hasHome = p.getTags().some(t => t.startsWith(`${HOME_TAG}:`));
-  const f = new ActionFormData()
-    .title(`${THEME.util} ·  iPadOS`)
-    .body(`${THEME.sep}\n常用功能\n${THEME.sep}`)
-    .button("設置家點（當前位置）")
-    .button("回家" + (hasHome ? "" : "（未設置）"))
-    .button(THEME.back);
-  mc.system.run(() => {
-    f.show(p).then(r => {
-      if (r.canceled) return;
-      if (r.selection === 0) setHome(p);
-      if (r.selection === 1) goHome(p);
-      if (r.selection === 2) openMain(p);
-    });
-  });
-}
-function setHome(p) {
-  for (const t of p.getTags()) if (t.startsWith(`${HOME_TAG}:`)) p.removeTag(t);
-  const pos = p.location;
-  const dim = p.dimension.id;
-  const tag = `${HOME_TAG}:${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)},${dim}`;
-  p.addTag(tag);
-  p.sendMessage("§a已設定家點。");
-  utilMenu(p);
-}
-function goHome(p) {
-  const tag = p.getTags().find(t => t.startsWith(`${HOME_TAG}:`));
-  if (!tag) { p.sendMessage("§e尚未設定家點。"); return utilMenu(p); }
-  const [, payload] = tag.split(":"); // ap10:home:x,y,z,dim
-  const [x, y, z, dim] = payload.split(",");
-  try {
-    const d = mc.world.getDimension(dim);
-    p.teleport({ x: Number(x), y: Number(y), z: Number(z) }, { dimension: d, keepVelocity: false });
-    p.sendMessage("§a已傳送到家點。");
-  } catch { p.sendMessage("§c傳送失敗：家點維度不存在。"); }
-}
-
-/* ==================== 排行榜（相容不同型別） ==================== */
-function showTop(p) {
-  const o = getObj();
-  const rows = [];
-
-  let usedParticipants = false;
-  try {
-    const parts = o.getParticipants();
-    for (const part of parts) {
-      // 使用參與者時若無法取得 score 則跳過
-      let score;
-      try { score = o.getScore(part); } catch { continue; }
-      if (!Number.isFinite(score)) continue;
-      const name = part?.displayName ?? "#unknown";
-      rows.push({ name, score });
-    }
-    if (rows.length) usedParticipants = true;
-  } catch {}
-
-  if (!usedParticipants) {
-    for (const pl of mc.world.getPlayers()) {
-      try {
-        const s = o.getScore(pl); // 改為直接使用 Player 實體
-        if (Number.isFinite(s)) rows.push({ name: pl.name, score: s });
-      } catch {}
-    }
-  }
-
-  rows.sort((a, b) => b.score - a.score);
-  const text = rows.slice(0, 15)
-    .map((r, i) => `${i + 1}. ${r.name} — ${CURRENCY} ${nfmt(r.score)}`)
-    .join("\n") || "目前沒有資料";
-
-  const msg = new MessageFormData()
-    .title("金幣排行榜")
-    .body(text)
-    .button1("關閉").button2("返回主選單");
-  mc.system.run(() => msg.show(p).then(r => { if (r.selection === 1) openMain(p); }));
 }
 
 /* ==================== 指令與備援 ==================== */
