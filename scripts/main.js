@@ -45,6 +45,27 @@ const SHOP = [
   }
 ];
 
+/* ==================== 相容工具 ==================== */
+// 兼容各版 UI 的 slider：
+// - 新版：slider(label, min, max, { value, step })
+// - 舊版：slider(label, min, max, value)
+function sliderCompat(form, label, min, max, def, step) {
+  const defVal = Math.max(min, Math.min(max, Math.floor(def ?? min)));
+  const stepVal = Math.max(1, Math.floor(step ?? 1));
+  // 優先嘗試新版物件參數
+  try {
+    return form.slider(label, min, max, { value: defVal, step: stepVal });
+  } catch {
+    // 回退舊版數字參數
+    try {
+      return form.slider(label, min, max, defVal);
+    } catch {
+      // 最後退：不帶預設
+      return form.slider(label, min, max);
+    }
+  }
+}
+
 /* ==================== 工具與基礎 ==================== */
 function getObj() {
   let o = mc.world.scoreboard.getObjective(AP_OBJ);
@@ -99,7 +120,6 @@ function addItems(p, id, amount) {
   let remain = Math.max(1, Math.floor(amount || 0));
   const c = inv(p); if (!c) return 0;
 
-  // 逐批嘗試加入，直到加不進去
   while (remain > 0) {
     const batch = Math.min(remain, type.maxStackSize ?? 64);
     const st = new mc.ItemStack(type, batch);
@@ -187,10 +207,8 @@ function exchangeDiamonds(p) {
     return bankMenu(p);
   }
   const maxExchange = Math.min(owned, 64); // UI 上限保守值
-  const f = new ModalFormData()
-    .title("鑽石兌換 AP")
-    // 注意：1.3.0 版 slider 只有 4 個參數 (label, min, max, value)
-    .slider(`可兌換鑽石（最多 ${maxExchange}）`, 1, maxExchange, Math.min(maxExchange, 8));
+  const f = new ModalFormData().title("鑽石兌換 AP");
+  sliderCompat(f, `可兌換鑽石（最多 ${maxExchange}）`, 1, maxExchange, Math.min(maxExchange, 8), 1);
   mc.system.run(() => {
     f.show(p).then(res => {
       if (res.canceled) return;
@@ -227,10 +245,8 @@ function askTransferAmount(from, to) {
   const bal = getBal(from);
   if (bal <= 0) return from.sendMessage("§e你的餘額不足。");
   const max = Math.min(bal, MAX_TRANSFER);
-  const m = new ModalFormData()
-    .title(`轉賬給 ${to.name}`)
-    // 1.3.0 slider 四參數
-    .slider(`金額（上限 ${CURRENCY} ${nfmt(max)}）`, 1, max, Math.min(max, 100));
+  const m = new ModalFormData().title(`轉賬給 ${to.name}`);
+  sliderCompat(m, `金額（上限 ${CURRENCY} ${nfmt(max)}）`, 1, max, Math.min(max, 100), 1);
   mc.system.run(() => {
     m.show(from).then(r => {
       if (r.canceled) return;
@@ -289,10 +305,12 @@ function buyFlow(p, item, onBack) {
   const max = Math.min(maxByMoney, maxBySpace, item.max ?? 64);
   if (max <= 0) { p.sendMessage("§e背包沒有足夠空間。"); return onBack?.(); }
 
-  const f = new ModalFormData()
-    .title(`購買 ${item.name}`)
-    // 1.3.0 slider 四參數
-    .slider(`數量（最多 ${nfmt(max)}）\n單價：${CURRENCY} ${nfmt(item.price)}\n總價=單價×數量`, 1, max, Math.min(max, 16));
+  const f = new ModalFormData().title(`購買 ${item.name}`);
+  sliderCompat(
+    f,
+    `數量（最多 ${nfmt(max)}）\n單價：${CURRENCY} ${nfmt(item.price)}\n總價=單價×數量`,
+    1, max, Math.min(max, 16), 1
+  );
   mc.system.run(() => {
     f.show(p).then(r => {
       if (r.canceled) return;
@@ -348,33 +366,25 @@ function goHome(p) {
   } catch { p.sendMessage("§c傳送失敗：家點維度不存在。"); }
 }
 
-/* ==================== 排行榜（修復型別差異） ==================== */
+/* ==================== 排行榜（相容不同型別） ==================== */
 function showTop(p) {
   const o = getObj();
   const rows = [];
 
-  // 首選：嘗試用 getParticipants（相容 ScoreboardIdentity 與 ScoreboardParticipant）
   let usedParticipants = false;
   try {
     const parts = o.getParticipants();
     for (const part of parts) {
-      // 可能是 ScoreboardIdentity（直接用）
-      // 也可能是 ScoreboardParticipant（用 .scoreboardIdentity）
       const id = part?.scoreboardIdentity ?? part;
       let score;
       try { score = o.getScore(id); } catch { continue; }
       if (!Number.isFinite(score)) continue;
-
-      // 名稱：ScoreboardIdentity 有 displayName；Participant 常也有 displayName
       const name = part?.displayName ?? id?.displayName ?? "#unknown";
       rows.push({ name, score });
     }
     if (rows.length) usedParticipants = true;
-  } catch {
-    // 某些版本沒有 getParticipants
-  }
+  } catch {}
 
-  // 備援：僅統計在線玩家
   if (!usedParticipants) {
     for (const pl of mc.world.getPlayers()) {
       try {
