@@ -225,13 +225,13 @@ function exchangeDiamonds(p) {
   });
 }
 function startTransferFlow(p) {
-  // 取得除了自己以外的所有在線玩家實體
+  // 取得除自己之外的在線玩家實體
   const others = mc.world.getPlayers({ excludeNames: [p.name] });
   if (others.length === 0) {
     p.sendMessage("§e沒有其他在線玩家可轉賬。");
     return;
   }
-  // 直接建立玩家名稱的列表，用於 UI 選擇
+  // 建立玩家名稱列表（這是從原始 players 中取得的名字）
   const names = others.map(pl => pl.name);
   
   const pick = new ModalFormData()
@@ -241,17 +241,19 @@ function startTransferFlow(p) {
   mc.system.run(() => {
     pick.show(p).then(r => {
       if (r.canceled) return;
-      // 直接使用陣列索引，避免再調用 getPlayers
-      const index = Number(r.formValues[0]);
-      if (isNaN(index) || index < 0 || index >= others.length) {
+      const idx = parseInt(r.formValues[0] + "", 10);
+      if (isNaN(idx) || idx < 0 || idx >= names.length) {
         p.sendMessage("§c選擇無效。");
         return;
       }
-      const target = others[index];
-      if (!target) {
+      // 依據名字重新抓取玩家，確保取得的是 native handle
+      const targetCandidates = mc.world.getPlayers({ name: names[idx] });
+      if (!targetCandidates.length) {
         p.sendMessage("§c對方已離線。");
         return;
       }
+      const target = targetCandidates[0];
+      // 確認 target 存在 native handle 後，再進行轉賬流程
       askTransferAmount(p, target);
     }).catch(e => {
       console.warn("選擇收款玩家時出錯：", e);
