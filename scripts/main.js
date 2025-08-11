@@ -75,13 +75,15 @@ function getObj() {
 function getBal(p) {
   const o = getObj();
   try {
-    const s = o.getScore(p.scoreboardIdentity);
+    const s = o.getScore(p); // 傳入 Player 實體
     return Number.isFinite(s) ? Math.max(0, s) : 0;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 function setBal(p, val) {
   const o = getObj();
-  o.setScore(p.scoreboardIdentity, Math.max(0, Math.floor(val)));
+  o.setScore(p, Math.max(0, Math.floor(val))); // 傳入 Player 實體
 }
 function addBal(p, delta) { setBal(p, getBal(p) + Math.floor(delta)); }
 
@@ -375,11 +377,11 @@ function showTop(p) {
   try {
     const parts = o.getParticipants();
     for (const part of parts) {
-      const id = part?.scoreboardIdentity ?? part;
+      // 使用參與者時若無法取得 score 則跳過
       let score;
-      try { score = o.getScore(id); } catch { continue; }
+      try { score = o.getScore(part); } catch { continue; }
       if (!Number.isFinite(score)) continue;
-      const name = part?.displayName ?? id?.displayName ?? "#unknown";
+      const name = part?.displayName ?? "#unknown";
       rows.push({ name, score });
     }
     if (rows.length) usedParticipants = true;
@@ -388,7 +390,7 @@ function showTop(p) {
   if (!usedParticipants) {
     for (const pl of mc.world.getPlayers()) {
       try {
-        const s = o.getScore(pl.scoreboardIdentity);
+        const s = o.getScore(pl); // 改為直接使用 Player 實體
         if (Number.isFinite(s)) rows.push({ name: pl.name, score: s });
       } catch {}
     }
@@ -503,9 +505,11 @@ mc.world.afterEvents.playerSpawn.subscribe(ev => {
   if (!ev.initialSpawn) return;
   const p = ev.player;
   const o = getObj();
-  let had = false;
-  try { had = o.hasParticipant ? o.hasParticipant(p.scoreboardIdentity) : false; } catch {}
-  if (!had && START_BAL > 0) o.setScore(p.scoreboardIdentity, START_BAL);
+  if (START_BAL > 0) {
+    try {
+      o.setScore(p, START_BAL); // 直接使用 Player 實體初始化
+    } catch {}
+  }
 });
 mc.system.runTimeout(() => {
   getObj();
