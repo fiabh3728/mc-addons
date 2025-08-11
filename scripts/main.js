@@ -225,29 +225,29 @@ function exchangeDiamonds(p) {
   });
 }
 function startTransferFlow(p) {
-  // 取得除自己之外的玩家實體
+  // 取得除了自己以外的所有在線玩家實體
   const others = mc.world.getPlayers({ excludeNames: [p.name] });
   if (others.length === 0) {
     p.sendMessage("§e沒有其他在線玩家可轉賬。");
     return;
   }
-  // 從實體陣列取得玩家名稱列表
+  // 直接建立玩家名稱的列表，用於 UI 選擇
   const names = others.map(pl => pl.name);
   
   const pick = new ModalFormData()
     .title("選擇收款玩家")
     .dropdown("收款人", { options: names, default: 0 });
-  
+
   mc.system.run(() => {
     pick.show(p).then(r => {
       if (r.canceled) return;
+      // 直接使用陣列索引，避免再調用 getPlayers
       const index = Number(r.formValues[0]);
-      if (isNaN(index) || index < 0 || index >= names.length) {
+      if (isNaN(index) || index < 0 || index >= others.length) {
         p.sendMessage("§c選擇無效。");
         return;
       }
-      // 從 others 陣列中搜尋對應的玩家實體
-      const target = others.find(pl => pl.name === names[index]);
+      const target = others[index];
       if (!target) {
         p.sendMessage("§c對方已離線。");
         return;
