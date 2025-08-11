@@ -226,20 +226,33 @@ function exchangeDiamonds(p) {
 }
 function startTransferFlow(p) {
   const others = mc.world.getPlayers({ excludeNames: [p.name] });
-  if (others.length === 0) { 
-    p.sendMessage("§e沒有其他在線玩家可轉賬。"); 
-    return; 
+  if (others.length === 0) {
+    p.sendMessage("§e沒有其他在線玩家可轉賬。");
+    return;
   }
   const names = others.map(pl => pl.name);
   const pick = new ModalFormData()
     .title("選擇收款玩家")
     .dropdown("收款人", { options: names, default: 0 });
+
   mc.system.run(() => {
     pick.show(p).then(r => {
       if (r.canceled) return;
-      const target = mc.world.getPlayers({ name: names[r.formValues[0]] })[0];
-      if (!target) return p.sendMessage("§c對方已離線。");
+      // 確保 r.formValues[0] 為數字後再取得名稱
+      const index = Number(r.formValues[0]);
+      if (isNaN(index) || index < 0 || index >= names.length) {
+        p.sendMessage("§c選擇無效。");
+        return;
+      }
+      const targetName = names[index];
+      const target = mc.world.getPlayers({ name: targetName })[0];
+      if (!target) {
+        p.sendMessage("§c對方已離線。");
+        return;
+      }
       askTransferAmount(p, target);
+    }).catch(e => {
+      console.warn("選擇收款玩家時出錯：", e);
     });
   });
 }
