@@ -6,7 +6,7 @@ import { ActionFormData, ModalFormData, MessageFormData } from "@minecraft/serve
 const AP_OBJ = "ap";                 // scoreboard 目標：AP 金幣
 const CURRENCY = "AP";               // 幣別顯示
 const DIAMOND_ID = "minecraft:diamond";
-const AP_PER_DIAMOND = 100;          // 匯率：1 鑽石 -> 100 AP（單向）
+const AP_PER_DIAMOND = 110;          // 匯率：1 鑽石 -> 100 AP（單向）
 const MAX_TRANSFER = 1_000_000_000;  // 轉帳上限
 const START_BAL = 0;                 // 新玩家初始 AP
 const THEME = {
@@ -22,24 +22,26 @@ const SHOP = [
   {
     name: "🧰 工具 Tools",
     items: [
-      { id: "minecraft:iron_pickaxe",   name: "鐵鎬",     price: 800,  max: 1 },
-      { id: "minecraft:diamond_sword",  name: "鑽石劍",   price: 2000, max: 1 },
-      { id: "minecraft:shield",         name: "盾牌",     price: 600,  max: 1 }
+      { id: "minecraft:diamond_sword", name: "鑽石劍", price: 200, max: 1 },
+      { id: "minecraft:diamond_shovel", name: "鑽石鏟", price: 100,  max: 1 },
+      { id: "minecraft:diamond_pickaxe", name: "鑽石鎬", price: 300,  max: 1 },
+      { id: "minecraft:diamond_axe", name: "鑽石斧", price: 300,  max: 1 },
+      { id: "minecraft:diamond_hoe", name: "鑽石鋤", price: 200,  max: 1 }
     ]
   },
   {
-    name: "🧱 方塊 Blocks",
+    name: "👔 護甲 Armor",
     items: [
-      { id: "minecraft:oak_planks",     name: "橡木板",   price: 5,    max: 64 },
-      { id: "minecraft:glass",          name: "玻璃",     price: 10,   max: 64 },
-      { id: "minecraft:torch",          name: "火把",     price: 3,    max: 64 }
+      { id: "minecraft:diamond_helmet", name: "鑽石頭盔", price: 500, max: 1 },
+      { id: "minecraft:diamond_chestplate", name: "鑽石胸甲", price: 800, max: 1 },
+      { id: "minecraft:diamond_leggings", name: "鑽石護腿", price: 700, max: 1 },
+      { id: "minecraft:diamond_boots", name: "鑽石靴子", price: 400, max: 1 }
     ]
   },
   {
     name: "🍖 食物 Food",
     items: [
-      { id: "minecraft:cooked_beef",    name: "牛排",     price: 40,   max: 64 },
-      { id: "minecraft:bread",          name: "麵包",     price: 20,   max: 64 }
+      { id: "minecraft:bread",          name: "麵包",     price: 5,   max: 64 }
     ]
   }
 ];
