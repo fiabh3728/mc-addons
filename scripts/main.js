@@ -64,7 +64,21 @@ function sliderCompat(form, label, min, max, def, step) {
     }
   }
 }
-
+function dropdownCompat(form, label, options, defIndex = 0) {
+  const opts = Array.isArray(options) ? options.map(o => String(o ?? "")) : [];
+  const def = Math.max(0, Math.min(Math.floor(defIndex), Math.max(opts.length - 1, 0)));
+  // 優先嘗試新版物件參數
+  try {
+    return form.dropdown(label, { options: opts, default: def });
+  } catch {
+    // 回退舊版參數 (label, options[], defaultIndex?)
+    try {
+      return form.dropdown(label, opts, def);
+    } catch {
+      return form.dropdown(label, opts);
+    }
+  }
+}
 /* ==================== 工具與基礎 ==================== */
 function getObj() {
   let o = mc.world.scoreboard.getObjective(AP_OBJ);
@@ -225,39 +239,32 @@ function exchangeDiamonds(p) {
   });
 }
 function startTransferFlow(p) {
-  // 取得除自己之外的在線玩家實體
   const others = mc.world.getPlayers({ excludeNames: [p.name] });
   if (others.length === 0) {
     p.sendMessage("§e沒有其他在線玩家可轉賬。");
     return;
   }
-  // 建立玩家名稱列表（這是從原始 players 中取得的名字）
   const names = others.map(pl => pl.name);
-  
-  const pick = new ModalFormData()
-    .title("選擇收款玩家")
-    .dropdown("收款人", { options: names, default: 0 });
+
+  const pick = new ModalFormData().title("選擇收款玩家");
+  dropdownCompat(pick, "收款人", names, 0);
 
   mc.system.run(() => {
     pick.show(p).then(r => {
       if (r.canceled) return;
-      const idx = parseInt(r.formValues[0] + "", 10);
-      if (isNaN(idx) || idx < 0 || idx >= names.length) {
+      const idx = Number(r.formValues[0]);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= names.length) {
         p.sendMessage("§c選擇無效。");
         return;
       }
-      // 依據名字重新抓取玩家，確保取得的是 native handle
-      const targetCandidates = mc.world.getPlayers({ name: names[idx] });
-      if (!targetCandidates.length) {
+      // 再次取實體，避免期間離線或名單變動
+      const target = mc.world.getPlayers({ name: names[idx] })[0];
+      if (!target) {
         p.sendMessage("§c對方已離線。");
         return;
       }
-      const target = targetCandidates[0];
-      // 確認 target 存在 native handle 後，再進行轉賬流程
       askTransferAmount(p, target);
-    }).catch(e => {
-      console.warn("選擇收款玩家時出錯：", e);
-    });
+    }).catch(e => console.warn("選擇收款玩家時出錯：", e));
   });
 }
 function askTransferAmount(from, to) {
