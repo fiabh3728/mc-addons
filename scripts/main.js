@@ -177,7 +177,18 @@ function maxAddable(p, id) {
 }
 function nfmt(n) { return Number(n).toLocaleString(); }
 
-/* ==================== 股市工具 ==================== */
+/* ==================== 股市工具（無需 getParticipants 版） ==================== */
+const _PRICE_CACHE = new Map(); // key => number
+
+function _clampPrice(v) {
+  return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(v)));
+}
+function priceKey(stock) { return `STK:${stock.key}`; }
+function _cacheGet(stock) {
+  return _PRICE_CACHE.has(stock.key) ? _PRICE_CACHE.get(stock.key) : stock.initPrice;
+}
+function _cacheSet(stock, v) { _PRICE_CACHE.set(stock.key, _clampPrice(v)); }
+
 function getPriceObj() {
   let o = mc.world.scoreboard.getObjective(STK_PRICE_OBJ);
   if (!o) o = mc.world.scoreboard.addObjective(STK_PRICE_OBJ, "Stock Prices");
@@ -189,21 +200,11 @@ function getHoldObj(stock) {
   return o;
 }
 
-// —— 自我修復價格 —— //
-function priceKey(stock) { return `STK:${stock.key}`; }
-
-function findPriceIdentity(stock) {
-  try {
-    const name = priceKey(stock);
-    const parts = getPriceObj().getParticipants();
-    return parts.find(p => (p?.displayName ?? p?.player?.name ?? "") === name);
-  } catch { return undefined; }
-}
-
+/* 確保價格條目存在（用指令直接建立），並更新快取 */
 function ensurePriceExists(stock, desired) {
-  if (findPriceIdentity(stock)) return;
-  const v = Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(desired ?? stock.initPrice)));
-  // 用命令立即創建/賦值假玩家，下一 tick 起 getParticipants 就能讀到
+  const v = _clampPrice(desired ?? _cacheGet(stock));
+  _cacheSet(stock, v);
+  // 用指令創建或覆寫分數
   mc.system.run(() => {
     mc.world.getDimension("overworld")
       .runCommandAsync(`scoreboard players set "${priceKey(stock)}" ${STK_PRICE_OBJ} ${v}`)
@@ -211,26 +212,29 @@ function ensurePriceExists(stock, desired) {
   });
 }
 
+/* 同步介面：回傳快取；同時在背景用指令讀取真值並刷新快取 */
 function getPrice(stock) {
-  const o = getPriceObj();
-  const id = findPriceIdentity(stock);
-  if (id) {
-    try {
-      const s = o.getScore(id);
-      return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(s)));
-    } catch {}
-  }
-  // 若尚未存在，先建再回傳初始值（很快就能讀到真值）
-  ensurePriceExists(stock, stock.initPrice);
-  return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(stock.initPrice)));
+  // 背景刷新快取（不阻塞 UI）
+  try {
+    mc.system.run(() => {
+      mc.world.getDimension("overworld")
+        .runCommandAsync(`scoreboard players get "${priceKey(stock)}" ${STK_PRICE_OBJ}`)
+        .then(res => {
+          const msg = res?.statusMessage ?? "";
+          const m = msg.match(/-?\d+/);
+          if (m) _cacheSet(stock, Number(m[0]));
+          else ensurePriceExists(stock, stock.initPrice); // 若不存在直接建一個
+        })
+        .catch(() => ensurePriceExists(stock, stock.initPrice));
+    });
+  } catch { /* 安全忽略 */ }
+  return _cacheGet(stock);
 }
 
+/* 寫入價格：立即更新快取，並用指令落地到 scoreboard */
 function setPrice(stock, val) {
-  const final = Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(val)));
-  const o = getPriceObj();
-  const id = findPriceIdentity(stock);
-  if (id) { o.setScore(id, final); return; }
-  // 找不到就直接用命令創建並賦值，避免寫入被忽略
+  const final = _clampPrice(val);
+  _cacheSet(stock, final);
   mc.system.run(() => {
     mc.world.getDimension("overworld")
       .runCommandAsync(`scoreboard players set "${priceKey(stock)}" ${STK_PRICE_OBJ} ${final}`)
@@ -257,11 +261,12 @@ function setHold(p, stock, val) {
   o.setScore(p, Math.max(0, Math.floor(val)));
 }
 
+/* 啟動時初始化：建立目標與預設價（用指令直接建），並預熱快取 */
 async function ensureStocksInit() {
   getPriceObj();
   for (const s of STOCKS) {
     getHoldObj(s);
-    ensurePriceExists(s, s.initPrice); // 改成自我修復
+    ensurePriceExists(s, s.initPrice);
   }
 }
 
