@@ -188,42 +188,63 @@ function getHoldObj(stock) {
   if (!o) o = mc.world.scoreboard.addObjective(stock.holdObj, `${stock.name} 持股`);
   return o;
 }
+
+// —— 自我修復價格 —— //
+function priceKey(stock) { return `STK:${stock.key}`; }
+
 function findPriceIdentity(stock) {
-  const name = `STK:${stock.key}`;
-  const parts = getPriceObj().getParticipants();
-  return parts.find(p => (p.displayName ?? p?.player?.name ?? "") === name);
-}
-async function ensurePriceIdentity(stock) {
-  const o = getPriceObj();
-  let id = findPriceIdentity(stock);
-  if (id) return;
-  const name = `STK:${stock.key}`;
-  // 用命令創建假玩家參與者，之後就能用 API 讀寫分數
   try {
-    await mc.world.getDimension("overworld")
-      .runCommandAsync(`scoreboard players set "${name}" ${STK_PRICE_OBJ} ${stock.initPrice}`);
-  } catch {}
+    const name = priceKey(stock);
+    const parts = getPriceObj().getParticipants();
+    return parts.find(p => (p?.displayName ?? p?.player?.name ?? "") === name);
+  } catch { return undefined; }
 }
+
+function ensurePriceExists(stock, desired) {
+  if (findPriceIdentity(stock)) return;
+  const v = Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(desired ?? stock.initPrice)));
+  // 用命令立即創建/賦值假玩家，下一 tick 起 getParticipants 就能讀到
+  mc.system.run(() => {
+    mc.world.getDimension("overworld")
+      .runCommandAsync(`scoreboard players set "${priceKey(stock)}" ${STK_PRICE_OBJ} ${v}`)
+      .catch(() => {});
+  });
+}
+
 function getPrice(stock) {
   const o = getPriceObj();
-  let id = findPriceIdentity(stock);
-  if (!id) return stock.initPrice;
-  let s = 0;
-  try { s = o.getScore(id); } catch { s = stock.initPrice; }
-  return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(s)));
+  const id = findPriceIdentity(stock);
+  if (id) {
+    try {
+      const s = o.getScore(id);
+      return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(s)));
+    } catch {}
+  }
+  // 若尚未存在，先建再回傳初始值（很快就能讀到真值）
+  ensurePriceExists(stock, stock.initPrice);
+  return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(stock.initPrice)));
 }
+
 function setPrice(stock, val) {
+  const final = Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(val)));
   const o = getPriceObj();
   const id = findPriceIdentity(stock);
-  if (!id) return; // 尚未初始化時略過（初始化流程會補）
-  o.setScore(id, Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(val))));
+  if (id) { o.setScore(id, final); return; }
+  // 找不到就直接用命令創建並賦值，避免寫入被忽略
+  mc.system.run(() => {
+    mc.world.getDimension("overworld")
+      .runCommandAsync(`scoreboard players set "${priceKey(stock)}" ${STK_PRICE_OBJ} ${final}`)
+      .catch(() => {});
+  });
 }
+
 function applyPriceImpact(stock, qty, side /* "BUY"|"SELL" */) {
   const step = Math.max(1, Math.ceil(Math.abs(qty) / TRADE_SENS));
   const p = getPrice(stock);
   const np = side === "BUY" ? p + step : p - step;
   setPrice(stock, np);
 }
+
 function getHold(p, stock) {
   const o = getHoldObj(stock);
   try {
@@ -235,11 +256,12 @@ function setHold(p, stock, val) {
   const o = getHoldObj(stock);
   o.setScore(p, Math.max(0, Math.floor(val)));
 }
+
 async function ensureStocksInit() {
   getPriceObj();
   for (const s of STOCKS) {
     getHoldObj(s);
-    await ensurePriceIdentity(s);
+    ensurePriceExists(s, s.initPrice); // 改成自我修復
   }
 }
 
@@ -266,6 +288,7 @@ function openMain(p) {
 
 /* ==================== 股市 UI 與交易 ==================== */
 function stockMarketMenu(p) {
+  for (const s of STOCKS) ensurePriceExists(s, s.initPrice);
   const f = new ActionFormData()
     .title("📈 股市 ·  iPadOS");
 
@@ -314,6 +337,7 @@ ${THEME.sep}`)
 }
 
 function tradeBuy(p, stock) {
+  ensurePriceExists(stock, stock.initPrice);
   const price = getPrice(stock);
   const bal = getBal(p);
   const maxByMoney = Math.floor(bal / price);
@@ -346,6 +370,7 @@ function tradeBuy(p, stock) {
 }
 
 function tradeSell(p, stock) {
+  ensurePriceExists(stock, stock.initPrice);
   const hold = getHold(p, stock);
   if (hold <= 0) {
     p.sendMessage("§e沒有可賣出的持股。");
