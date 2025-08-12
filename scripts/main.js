@@ -171,12 +171,14 @@ function openMain(p) {
     .title(` ${THEME.title}`)
     .body(`${THEME.sep}\n玩家：${p.name}\n餘額：${CURRENCY} ${nfmt(bal)}\n${THEME.sep}`)
     .button(`${THEME.bank}\n管理餘額、兌換、轉賬`)
-    .button(`${THEME.shop}\n購買道具與方塊`);
+    .button(`${THEME.shop}\n購買道具與方塊`)
+    .button("🏆 排行榜");
   mc.system.run(() => {
     f.show(p).then(res => {
       if (res.canceled) return;
       if (res.selection === 0) bankMenu(p);
       if (res.selection === 1) shopMenu(p);
+      if (res.selection === 2) showLeaderboard(p);
     }).catch(console.warn);
   });
 }
@@ -354,6 +356,79 @@ function buyFlow(p, item, onBack) {
   });
 }
 
+// 取得 Top N 玩家（優先用 scoreboard participants，兼容不同 API）
+function getTopPlayers(limit = 10) {
+  const o = getObj();
+  let parts = [];
+  try { parts = o.getParticipants(); } catch { parts = []; }
+
+  const list = [];
+
+  // 優先遍歷目標下的所有參與者（包含離線玩家）
+  for (const id of parts) {
+    let score;
+    try { score = o.getScore(id); } catch { continue; }
+    if (!Number.isFinite(score)) continue;
+
+    // 僅保留真玩家（排除假玩家/隊伍等）
+    let isPlayer = true;
+    try {
+      if (typeof mc.ScoreboardIdentityType !== "undefined" && id?.type !== undefined) {
+        isPlayer = id.type === mc.ScoreboardIdentityType.Player;
+      } else if ("player" in id) { // 舊 API：有 player 欄位即為玩家
+        isPlayer = !!id.player;
+      }
+    } catch {}
+    if (!isPlayer) continue;
+
+    const name = id?.displayName ?? id?.player?.name ?? String(id?.name ?? "");
+    if (!name) continue;
+
+    list.push({ name, score });
+  }
+
+  // 後備：若 participants 取不到，至少把線上玩家列入
+  if (list.length === 0) {
+    for (const pl of mc.world.getPlayers()) {
+      const score = getBal(pl);
+      list.push({ name: pl.name, score });
+    }
+  }
+
+  list.sort((a, b) => b.score - a.score);
+  return list.slice(0, Math.max(1, Math.floor(limit)));
+}
+
+// 顯示排行榜 UI（MessageForm，含「刷新」與「返回」）
+function showLeaderboard(p) {
+  const top = getTopPlayers(10);
+  let body = `${THEME.sep}\nAP 富豪榜（Top ${top.length}）\n${THEME.sep}\n`;
+  if (top.length === 0) {
+    body += "暫無數據。\n";
+  } else {
+    for (let i = 0; i < top.length; i++) {
+      const rank = String(i + 1).padStart(2, " ");
+      const name = top[i].name.length > 14 ? top[i].name.slice(0, 13) + "…" : top[i].name;
+      body += `#${rank}  ${name}   ${CURRENCY} ${nfmt(top[i].score)}\n`;
+    }
+  }
+  body += THEME.sep;
+
+  const m = new MessageFormData()
+    .title("🏆 排行榜")
+    .body(body)
+    .button1("刷新")
+    .button2(THEME.back);
+
+  mc.system.run(() => {
+    m.show(p).then(r => {
+      // MessageForm 的第一顆按鈕索引為 0、第二顆為 1
+      if (r.selection === 0) return showLeaderboard(p); // 刷新
+      if (r.selection === 1) return openMain(p);        // 返回
+    }).catch(console.warn);
+  });
+}
+
 /* ==================== 指令與備援 ==================== */
 const hasPermEnum = mc.CommandPermissionLevel && typeof mc.CommandPermissionLevel.Any === "number";
 const canRegCmd = !!(mc.system?.beforeEvents && "startup" in mc.system.beforeEvents);
@@ -413,6 +488,17 @@ if (canRegCmd) {
         mc.system.run(() => doTransfer(from, to, Math.max(1, Math.floor(Number(amount) || 0))));
       }
     );
+    // /ap:top
+    reg.registerCommand(
+        hasPermEnum
+      ? { name: "ap:top", description: "查看 AP 富豪榜", permissionLevel: mc.CommandPermissionLevel.Any }
+        : { name: "ap:top", description: "查看 AP 富豪榜" },
+        (origin) => {
+        const p = origin?.sourceEntity; if (!p) return;
+        mc.system.run(() => showLeaderboard(p));
+      }
+    );
+
   });
 }
 
