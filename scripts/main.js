@@ -16,6 +16,19 @@ const THEME = {
   back: "‹ 返回",
   sep: "————————————"
 };
+/* ==================== 股市設定 ==================== */
+const STK_PRICE_OBJ = "stk_px";     // 價格用的 scoreboard 目標
+const TRADE_SENS = 25;              // 價格敏感度：每淨買(或賣) TRADE_SENS 股，價格變動 1 AP
+const TRADE_MAX_PER_TX = 10000;     // 單次交易上限（避免滑桿過長）
+const PRICE_MIN = 1;                // 最低單價 AP
+const PRICE_MAX = 10_000_000;       // 最高單價 AP（防溢位）
+
+// 三支股票
+const STOCKS = [
+  { key: "GEM", name: "寶石公司", holdObj: "stk_gem", initPrice: 120 },
+  { key: "DIA", name: "鑽石公司", holdObj: "stk_dia", initPrice: 200 },
+  { key: "GLD", name: "黃金公司", holdObj: "stk_gld", initPrice: 150 },
+];
 
 // 商店清單
 const SHOP = [
@@ -164,6 +177,72 @@ function maxAddable(p, id) {
 }
 function nfmt(n) { return Number(n).toLocaleString(); }
 
+/* ==================== 股市工具 ==================== */
+function getPriceObj() {
+  let o = mc.world.scoreboard.getObjective(STK_PRICE_OBJ);
+  if (!o) o = mc.world.scoreboard.addObjective(STK_PRICE_OBJ, "Stock Prices");
+  return o;
+}
+function getHoldObj(stock) {
+  let o = mc.world.scoreboard.getObjective(stock.holdObj);
+  if (!o) o = mc.world.scoreboard.addObjective(stock.holdObj, `${stock.name} 持股`);
+  return o;
+}
+function findPriceIdentity(stock) {
+  const name = `STK:${stock.key}`;
+  const parts = getPriceObj().getParticipants();
+  return parts.find(p => (p.displayName ?? p?.player?.name ?? "") === name);
+}
+async function ensurePriceIdentity(stock) {
+  const o = getPriceObj();
+  let id = findPriceIdentity(stock);
+  if (id) return;
+  const name = `STK:${stock.key}`;
+  // 用命令創建假玩家參與者，之後就能用 API 讀寫分數
+  try {
+    await mc.world.getDimension("overworld")
+      .runCommandAsync(`scoreboard players set "${name}" ${STK_PRICE_OBJ} ${stock.initPrice}`);
+  } catch {}
+}
+function getPrice(stock) {
+  const o = getPriceObj();
+  let id = findPriceIdentity(stock);
+  if (!id) return stock.initPrice;
+  let s = 0;
+  try { s = o.getScore(id); } catch { s = stock.initPrice; }
+  return Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(s)));
+}
+function setPrice(stock, val) {
+  const o = getPriceObj();
+  const id = findPriceIdentity(stock);
+  if (!id) return; // 尚未初始化時略過（初始化流程會補）
+  o.setScore(id, Math.max(PRICE_MIN, Math.min(PRICE_MAX, Math.floor(val))));
+}
+function applyPriceImpact(stock, qty, side /* "BUY"|"SELL" */) {
+  const step = Math.max(1, Math.ceil(Math.abs(qty) / TRADE_SENS));
+  const p = getPrice(stock);
+  const np = side === "BUY" ? p + step : p - step;
+  setPrice(stock, np);
+}
+function getHold(p, stock) {
+  const o = getHoldObj(stock);
+  try {
+    const s = o.getScore(p);
+    return Number.isFinite(s) ? Math.max(0, s) : 0;
+  } catch { return 0; }
+}
+function setHold(p, stock, val) {
+  const o = getHoldObj(stock);
+  o.setScore(p, Math.max(0, Math.floor(val)));
+}
+async function ensureStocksInit() {
+  getPriceObj();
+  for (const s of STOCKS) {
+    getHoldObj(s);
+    await ensurePriceIdentity(s);
+  }
+}
+
 /* ==================== iPadOS 主菜單 ==================== */
 function openMain(p) {
   const bal = getBal(p);
@@ -172,13 +251,124 @@ function openMain(p) {
     .body(`${THEME.sep}\n玩家：${p.name}\n餘額：${CURRENCY} ${nfmt(bal)}\n${THEME.sep}`)
     .button(`${THEME.bank}\n管理餘額、兌換、轉賬`)
     .button(`${THEME.shop}\n購買道具與方塊`)
+    .button("📈 股市")
     .button("🏆 排行榜");
   mc.system.run(() => {
     f.show(p).then(res => {
       if (res.canceled) return;
       if (res.selection === 0) bankMenu(p);
       if (res.selection === 1) shopMenu(p);
-      if (res.selection === 2) showLeaderboard(p);
+      if (res.selection === 2) stockMarketMenu(p);
+      if (res.selection === 3) showLeaderboard(p);
+    }).catch(console.warn);
+  });
+}
+
+/* ==================== 股市 UI 與交易 ==================== */
+function stockMarketMenu(p) {
+  const f = new ActionFormData()
+    .title("📈 股市 ·  iPadOS");
+
+  let body = `${THEME.sep}\n選擇公司\n${THEME.sep}\n`;
+  for (const s of STOCKS) {
+    const price = getPrice(s);
+    const hold = getHold(p, s);
+    body += `${s.name}  單價：${CURRENCY} ${nfmt(price)} / 股   持股：${nfmt(hold)}\n`;
+  }
+  f.body(body);
+  for (const s of STOCKS) f.button(`${s.name}\n單價 ${CURRENCY} ${nfmt(getPrice(s))}`);
+  f.button(THEME.back);
+
+  mc.system.run(() => {
+    f.show(p).then(r => {
+      if (r.canceled) return;
+      if (r.selection === STOCKS.length) return openMain(p);
+      const s = STOCKS[r.selection];
+      openStockDetail(p, s);
+    }).catch(console.warn);
+  });
+}
+
+function openStockDetail(p, stock) {
+  const price = getPrice(stock);
+  const hold = getHold(p, stock);
+  const f = new ActionFormData()
+    .title(`${stock.name}`)
+    .body(`${THEME.sep}
+單價：${CURRENCY} ${nfmt(price)} / 股
+你的持股：${nfmt(hold)} 股
+說明：單次每買入/賣出 ${nfmt(TRADE_SENS)} 股，價格變動約 1 AP。
+${THEME.sep}`)
+    .button("買入")
+    .button("賣出")
+    .button(THEME.back);
+
+  mc.system.run(() => {
+    f.show(p).then(r => {
+      if (r.canceled) return;
+      if (r.selection === 0) tradeBuy(p, stock);
+      if (r.selection === 1) tradeSell(p, stock);
+      if (r.selection === 2) stockMarketMenu(p);
+    }).catch(console.warn);
+  });
+}
+
+function tradeBuy(p, stock) {
+  const price = getPrice(stock);
+  const bal = getBal(p);
+  const maxByMoney = Math.floor(bal / price);
+  const max = Math.max(0, Math.min(maxByMoney, TRADE_MAX_PER_TX));
+  if (max <= 0) {
+    p.sendMessage(`§e餘額不足，當前單價 ${CURRENCY} ${nfmt(price)}。`);
+    return openStockDetail(p, stock);
+  }
+  const m = new ModalFormData().title(`買入 ${stock.name}`);
+  sliderCompat(m, `股數（最多 ${nfmt(max)}）\n當前單價：${CURRENCY} ${nfmt(price)}\n總價=單價×股數`, 1, max, Math.min(max, 64), 1);
+  mc.system.run(() => {
+    m.show(p).then(r => {
+      if (r.canceled) return openStockDetail(p, stock);
+      const qty = Math.max(1, Math.floor(r.formValues[0] || 1));
+      // 再次校驗最新價格與餘額
+      const curP = getPrice(stock);
+      const cost = qty * curP;
+      const nowBal = getBal(p);
+      if (cost > nowBal) {
+        p.sendMessage("§c餘額變動，買入失敗。");
+        return openStockDetail(p, stock);
+      }
+      addBal(p, -cost);
+      setHold(p, stock, getHold(p, stock) + qty);
+      applyPriceImpact(stock, qty, "BUY");
+      p.sendMessage(`§a已買入 ${stock.name} ${nfmt(qty)} 股，成交單價 ${CURRENCY} ${nfmt(curP)}，花費 ${CURRENCY} ${nfmt(cost)}。`);
+      openStockDetail(p, stock);
+    }).catch(console.warn);
+  });
+}
+
+function tradeSell(p, stock) {
+  const hold = getHold(p, stock);
+  if (hold <= 0) {
+    p.sendMessage("§e沒有可賣出的持股。");
+    return openStockDetail(p, stock);
+  }
+  const max = Math.min(hold, TRADE_MAX_PER_TX);
+  const m = new ModalFormData().title(`賣出 ${stock.name}`);
+  sliderCompat(m, `股數（最多 ${nfmt(max)}）\n當前單價：${CURRENCY} ${nfmt(getPrice(stock))}\n收入=單價×股數`, 1, max, Math.min(max, 64), 1);
+  mc.system.run(() => {
+    m.show(p).then(r => {
+      if (r.canceled) return openStockDetail(p, stock);
+      const qty = Math.max(1, Math.floor(r.formValues[0] || 1));
+      const curP = getPrice(stock);
+      if (qty > getHold(p, stock)) {
+        p.sendMessage("§c持股變動，賣出失敗。");
+        return openStockDetail(p, stock);
+      }
+      const income = qty * curP;
+      setHold(p, stock, getHold(p, stock) - qty);
+      addBal(p, income);
+      applyPriceImpact(stock, qty, "SELL");
+      p.sendMessage(`§a已賣出 ${stock.name} ${nfmt(qty)} 股，成交單價 ${CURRENCY} ${nfmt(curP)}，收入 ${CURRENCY} ${nfmt(income)}。`);
+      openStockDetail(p, stock);
     }).catch(console.warn);
   });
 }
@@ -543,7 +733,8 @@ mc.world.afterEvents.playerSpawn.subscribe(ev => {
     } catch {}
   }
 });
-mc.system.runTimeout(() => {
-  getObj();
+mc.system.runTimeout(async () => {
+  getObj(); // 原本就有
+  await ensureStocksInit(); // 新增：初始化股市 scoreboard 與價格參與者
   mc.world.sendMessage("§a[AP10] iPadOS 經濟系統已載入：/ap:menu 或 !ap。");
 }, 10);
